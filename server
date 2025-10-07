@@ -1,0 +1,165 @@
+"""
+Name: Leah Price
+Date: 10/7/2025
+Descirption: Server file for the tcp chat
+"""
+
+
+import socket
+import threading
+import datetime
+import sys
+
+HOST = "0.0.0.0"
+PORT = 5555
+
+server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+server.bind((HOST, PORT))
+server.listen()
+
+clients_lock = threading.Lock()
+clients = {}  
+
+print(f"Server started on {HOST}:{PORT} and waiting for connections...")
+
+def now_timestamp():
+    return datetime.datetime.now().strftime("%I:%M %p")
+
+def broadcast(message, sender=None):
+    """Send message to all clients except the sender."""
+    with clients_lock:
+        for user, conn in list(clients.items()):
+            if user == sender:
+                continue
+            try:
+                conn.sendall((message + "\n").encode("UTF-8"))
+            except Exception:
+                try:
+                    conn.close()
+                except:
+                    pass
+                del clients[user]
+
+def schedule_broadcast(delay_seconds, username, message):
+    """Called by Timer to broadcast the delayed message."""
+    try:
+        timestamped = f"[{now_timestamp()}] {username} (delayed): {message}"
+        print(f"(scheduled) {timestamped}")
+        broadcast(timestamped, sender=None)
+    except Exception as e:
+        print("Error broadcasting delayed message:", e)
+
+def handle_client(conn, addr):
+    username = None
+    try:
+        conn.sendall("Enter your name: ".encode("UTF-8"))
+        raw = conn.recv(1024)
+        if not raw:
+            conn.close()
+            return
+        username = raw.decode("UTF-8").strip()
+        with clients_lock:
+            clients[username] = conn
+
+        print(f"{username} connected from {addr}")
+        broadcast(f"*** {username} joined the chat! ***")
+
+        while True:
+            data = conn.recv(4096)
+            if not data:
+                break
+            msg = data.decode("UTF-8").strip()
+            if not msg:
+                continue
+
+            if msg.lower() == "/users":
+                with clients_lock:
+                    users = ", ".join(clients.keys())
+                conn.sendall(f"Online users: {users}\n".encode("UTF-8"))
+                continue
+
+            if msg.lower().startswith("/msg "):
+                try:
+                    _, to_user, message = msg.split(" ", 2)
+                except ValueError:
+                    conn.sendall("Usage: /msg <username> <message>\n".encode("UTF-8"))
+                    continue
+                with clients_lock:
+                    if to_user in clients:
+                        target_conn = clients[to_user]
+                        curr = now_timestamp()
+                        try:
+                            target_conn.sendall(f"[{curr}] (private) {username}: {message}\n".encode("UTF-8"))
+                            conn.sendall(f"[{curr}] (to {to_user}) You: {message}\n".encode("UTF-8"))
+                        except Exception:
+                            conn.sendall(f"Failed to deliver to {to_user}.\n".encode("UTF-8"))
+                    else:
+                        conn.sendall(f"User '{to_user}' not found.\n".encode("UTF-8"))
+                continue
+
+            if msg.lower().startswith("/delay "):
+                parts = msg.split(" ", 2)
+                if len(parts) < 3:
+                    conn.sendall("Usage: /delay <seconds> <message>\n".encode("UTF-8"))
+                    continue
+                _, sec_str, delayed_message = parts
+                try:
+                    seconds = float(sec_str)
+                    if seconds < 0:
+                        raise ValueError("negative")
+                except Exception:
+                    conn.sendall("Invalid seconds. Use a non-negative number (e.g., 5 or 2.5).\n".encode("UTF-8"))
+                    continue
+                conn.sendall(f"Message scheduled in {seconds} seconds.\n".encode("UTF-8"))
+                timer = threading.Timer(seconds, schedule_broadcast, args=(seconds, username, delayed_message))
+                timer.daemon = True
+                timer.start()
+                continue
+
+            if msg.lower() == "/quit":
+                break
+
+            formatted = f"[{now_timestamp()}] {username}: {msg}"
+            print(formatted)
+            broadcast(formatted, sender=username)
+
+    except ConnectionResetError:
+        pass
+    except Exception as e:
+        print("Client handler exception:", e)
+    finally:
+        with clients_lock:
+            if username and username in clients:
+                try:
+                    del clients[username]
+                except KeyError:
+                    pass
+        if username:
+            print(f"{username} disconnected.")
+            broadcast(f"*** {username} left the chat. ***")
+        try:
+            conn.close()
+        except:
+            pass
+
+def accept_connections():
+    try:
+        while True:
+            conn, addr = server.accept()
+            t = threading.Thread(target=handle_client, args=(conn, addr), daemon=True)
+            t.start()
+    except KeyboardInterrupt:
+        print("\nShutting down server.")
+        with clients_lock:
+            for u, c in clients.items():
+                try:
+                    c.sendall("Server shutting down.\n".encode("UTF-8"))
+                    c.close()
+                except:
+                    pass
+        server.close()
+        sys.exit(0)
+
+if __name__ == "__main__":
+    accept_connections()
