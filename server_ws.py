@@ -169,6 +169,13 @@ async def handler(ws, path):
 if __name__ == "__main__":
     print(f"Starting WebSocket chat server on ws://{HOST}:{PORT}/")
     print("Change CHAT_PASSWORD inside the script to set your room password.")
-    start_server = websockets.serve(handler, HOST, PORT)
-    asyncio.get_event_loop().run_until_complete(start_server)
-    asyncio.get_event_loop().run_forever()
+
+    async def main():
+        async with websockets.serve(handler, HOST, PORT):
+            await asyncio.Future()  # run forever
+
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\nServer stopped.")
+
